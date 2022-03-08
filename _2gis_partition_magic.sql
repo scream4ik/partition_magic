@@ -142,7 +142,7 @@ BEGIN
 		SELECT t.indexname, t.indexdef INTO idx2 FROM pg_indexes t WHERE t.schemaname = schema_name AND t.tablename = itable AND t.indexname = idx2_name;
 
 		idx1_def := idx1.indexdef;
-		idx1_def := regexp_replace(idx1_def, 'CREATE (UNIQUE |)INDEX (' || idx1_name || ') ON (' || parent_table || ') ', 'CREATE \1INDEX ' || idx2_name || ' ON ' || itable || ' ');
+		idx1_def := regexp_replace(idx1_def, 'CREATE (UNIQUE |)INDEX (' || idx1_name || ') ON (' || schema_name || '.' || parent_table || ') ', 'CREATE \1INDEX ' || idx2_name || ' ON ' || itable || ' ');
 		idx2_def := idx2.indexdef;
 
 		IF (idx2.indexname IS NULL) THEN
