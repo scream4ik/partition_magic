@@ -68,7 +68,7 @@ SELECT * FROM ONLY test_table;
 ==================
 Накатывайте изменения структуры только на основную таблице, после чего запускайте 
 ```
-_2gis_partition_magic('news', 'category_id');
+SELECT _2gis_partition_magic('news', 'category_id');
 ```
 Таблицы будут обновлены автоматически.
 
@@ -106,4 +106,33 @@ DELETE FROM news WHERE category_id IN (1, 2);
 SELECT * FROM news_1 ...;
 UPDATE news_2 ...;
 DELETE FROM news_3 ...;
+```
+
+Добавлена поддержка дат
+==================
+Создаём таблицу с полем datetime
+```
+CREATE SEQUENCE "news_id_seq" START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+
+CREATE TABLE news (
+	  id BIGINT DEFAULT nextval('news_id_seq'::regclass),
+	  category_id INT,
+	  title TEXT,
+	  data TEXT,
+	  created timestamp
+	);
+	ALTER TABLE ONLY "news" ADD CONSTRAINT "pk_news" PRIMARY KEY ("id");
+```
+
+Партицируем таблицу по полю `created`
+```
+SELECT _2gis_partition_magic('news', 'created');
+```
+
+Добавляем записи
+```
+INSERT INTO news(category_id, title, created) VALUES (1, 'Item 1', '2022-01-01 00:00:00') RETURNING *;
+INSERT INTO news(category_id, title, created) VALUES (2, 'Item 2', '2022-01-02 00:00:00') RETURNING *;
+INSERT INTO news(category_id, title, created) VALUES (3, 'Item 3', '2022-01-03 00:00:00') RETURNING *;
+INSERT INTO news(category_id, title, created) VALUES (4, 'Item 4', '2022-01-04 00:00:00') RETURNING *;
 ```

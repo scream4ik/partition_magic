@@ -2,7 +2,7 @@
 DECLARE
 	hasMeta boolean;
 	meta RECORD;
-	partition_id integer;
+	partition_id varchar;
 	itable text;
 	partitionRes boolean;
 	lockHash integer := '_2gis_partition_magic_meta'::regclass::oid::integer;
@@ -15,11 +15,18 @@ BEGIN
 
 	IF hasMeta THEN
 		EXECUTE format('SELECT ($1).%I', meta.action_field) USING NEW INTO partition_id;
+
+		partition_id_to_number := to_number(partition_id, '9');
+
+		IF ( to_char(partition_id_to_number, '9') != partition_id ) THEN
+			partition_id := replace(to_char(to_timestamp(partition_id, 'YYYY-MM-DD'), 'YYYY-MM-DD'), '-', '_');
+		END IF;
+
 		itable := meta.partition_table_prefix || partition_id::text;
 
 		IF ( NOT EXISTS ( SELECT 1 FROM pg_tables t WHERE t.schemaname = meta.schema_name AND t.tablename = itable ) ) THEN
 			PERFORM pg_advisory_xact_lock(lockHash, lockHash);
-			
+
 			IF ( NOT EXISTS ( SELECT 1 FROM pg_tables t WHERE t.schemaname = meta.schema_name AND t.tablename = itable ) ) THEN
 				partitionRes := _2gis_partition_magic(meta.parent_table_name, meta.action_field, partition_id, meta.schema_name, meta.partition_table_prefix, FALSE);
 			END IF;
@@ -52,7 +59,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION _2gis_partition_magic(parent_table text, action_field text, partition_idx integer = NULL, schema_name text = NULL, partition_table_prefix text = NULL, is_debug boolean = FALSE) RETURNS boolean AS $$
+CREATE OR REPLACE FUNCTION _2gis_partition_magic(parent_table text, action_field text, partition_idx varchar = NULL, schema_name text = NULL, partition_table_prefix text = NULL, is_debug boolean = TRUE) RETURNS boolean AS $$
 DECLARE
     itable varchar(255);
     logtable varchar(255);
@@ -83,7 +90,7 @@ BEGIN
 
 	IF ( NOT EXISTS ( SELECT 1 FROM pg_tables t WHERE t.schemaname = schema_name AND t.tablename = '_2gis_partition_magic_meta' ) ) THEN
 		IF(is_debug) THEN RAISE INFO '----- [Creating META table "%"] -----', '_2gis_partition_magic_meta'; END IF;
-		EXECUTE 'CREATE TABLE _2gis_partition_magic_meta (id integer, table_name character varying(255), action_field character varying(255), partition_id integer, schema_name character varying(255), partition_table_prefix character varying(255), parent_table_name character varying(255), created_at TIMESTAMP DEFAULT NOW());';
+		EXECUTE 'CREATE TABLE _2gis_partition_magic_meta (id integer, table_name character varying(255), action_field character varying(255), partition_id character varying(255), schema_name character varying(255), partition_table_prefix character varying(255), parent_table_name character varying(255), created_at TIMESTAMP DEFAULT NOW());';
 		EXECUTE 'CREATE INDEX table_name_idx ON _2gis_partition_magic_meta (table_name);';
 		EXECUTE 'CREATE INDEX partition_id_idx ON _2gis_partition_magic_meta (partition_id);';
 		EXECUTE 'CREATE INDEX parent_table_name_idx ON _2gis_partition_magic_meta (parent_table_name);';
@@ -109,7 +116,7 @@ BEGIN
 		IF(is_debug) THEN RAISE INFO '----- [Detecting partitions...] -----'; END IF;
 		FOR tbl IN SELECT t.tablename, substring(t.tablename from '\_(\d+)$')::integer AS part_index FROM pg_tables t WHERE t.schemaname = schema_name AND t.tablename ~* ('^' || partition_table_prefix || '\d+') ORDER BY part_index ASC
 		LOOP
-			partition_idx := replace(tbl.tablename, partition_table_prefix, '')::integer;
+			partition_idx := replace(tbl.tablename, partition_table_prefix, '')::varchar;
 			IF(is_debug) THEN RAISE INFO '----- [Found partition #%, table: "%.%"] -----', partition_idx, schema_name, tbl.tablename; END IF;
 			res := res AND _2gis_partition_magic(parent_table, action_field, partition_idx, schema_name, partition_table_prefix, is_debug);
 		END LOOP;
@@ -117,18 +124,20 @@ BEGIN
 		RETURN res;
 	END IF;
 
-	IF(partition_idx < 0) THEN
+	IF(partition_idx = '') THEN
 		partition_idx := NULL;
 		itable := partition_table_prefix;
 	ELSE
 		itable := partition_table_prefix || partition_idx;
+		partition_idx := replace(partition_idx, '_', '-');
 	END IF;
 
 	IF(is_debug) THEN RAISE INFO '----- [Working with table "%.%"] -----', schema_name, itable; END IF;
 
 	IF ( NOT EXISTS ( SELECT 1 FROM pg_tables t WHERE t.schemaname = schema_name AND t.tablename = itable ) ) THEN
 		IF(is_debug) THEN RAISE INFO 'Creating partition "%.%" for table "%.%"...', schema_name, itable, schema_name, parent_table; END IF;
-		EXECUTE 'CREATE TABLE ' || itable || ' (CONSTRAINT ' || itable || '_' || action_field || '_check CHECK (' || action_field || ' = ' || partition_idx || ')) INHERITS (' || parent_table ||');';
+-- 		EXECUTE 'CREATE TABLE ' || itable || ' (CONSTRAINT ' || itable || '_' || action_field || '_check CHECK (' || action_field || ' = ' || partition_idx || ')) INHERITS (' || parent_table ||');';
+		EXECUTE format('CREATE TABLE %I (CONSTRAINT %I_%I_check CHECK (%I = %L)) INHERITS (%I)', itable, itable, action_field, action_field, partition_idx, parent_table);
 		-- IF(is_debug) THEN RAISE INFO 'Creating rules on table...'; END IF;
 		-- EXECUTE 'CREATE RULE ' || itable || '_insert AS ON INSERT TO ' || parent_table || ' WHERE NEW.' || action_field || ' = ' || partition_idx || ' DO INSTEAD INSERT INTO ' || itable || ' VALUES (NEW.*) RETURNING ' || itable || '.*;';
 		IF(is_debug) THEN RAISE INFO 'Creating meta info...'; END IF;
@@ -155,11 +164,18 @@ BEGIN
 			EXECUTE idx1_def;
 		ELSE
 			IF(idx1_def != idx2_def) THEN
-				IF(is_debug) THEN RAISE INFO 'Dropping old index "%" ON "%.%"...', idx2_name, schema_name, itable; END IF;
-				EXECUTE 'DROP INDEX ' || idx2_name || ';';
+				BEGIN
+					IF(is_debug) THEN RAISE INFO 'Dropping old index "%" ON "%.%"...', idx2_name, schema_name, itable; END IF;
+					EXECUTE 'DROP INDEX ' || idx2_name || ';';
 
-				IF(is_debug) THEN RAISE INFO 'Creating new index "%" ON "%.%"...', idx2_name, schema_name, itable; END IF;
-				EXECUTE idx1_def;
+					IF(is_debug) THEN RAISE INFO 'Creating new index "%" ON "%.%"...', idx2_name, schema_name, itable; END IF;
+					EXECUTE idx1_def;
+				EXCEPTION
+--                  [2BP01] ERROR: cannot drop index pk_news_2022_01_01 because constraint pk_news_2022_01_01 on table news_2022_01_01 requires it
+--                  Hint: You can drop constraint pk_news_2022_01_01 on table news_2022_01_01 instead.
+--                  We will try to drop constraints and indexes later and re-create them
+					WHEN sqlstate '2BP01' THEN
+				END;
 			END IF;
 		END IF;
 	END LOOP;
